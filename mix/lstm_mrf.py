@@ -14,7 +14,7 @@ def fetch_data():
     data['datetime'] = pd.to_datetime(data['datetime'])
     data.set_index('datetime', inplace=True)
     # 获取最近 一年 的数据
-    data = data[data.index >= pd.Timestamp.now() - pd.Timedelta(days=90)]
+    data = data[data.index >= pd.Timestamp.now() - pd.Timedelta(days=120)]
     # 重采样为30分钟级别数据
     data_30m = data.resample('30min').agg({
         'open': 'first',  # 30分钟内的第一个开盘价
@@ -95,27 +95,22 @@ def create_multi_scale_dataset(data, lookback, horizon, day_window=3):
     x_30m = []
     y = []
 
-    # 计算30分钟数据需要的窗口大小（3天约24*3=72个30分钟K线）
-    thirty_min_window = day_window * 24 * 3  # 3天数据
+    interval = 30  # 每30分钟一个点
+    steps_30m = day_window * 24  # 3天 = 72个30分钟点
+    window_size_30m = interval * steps_30m  # 实际需要2160分钟长度
 
-    for i in range(len(data) - lookback - horizon):
+    for i in range(window_size_30m, len(data) - lookback - horizon):
         # 分钟级数据窗口
         minute_window = data.iloc[i:i + lookback]
 
-        # 30分钟级数据窗口（取最近的72个30分钟K线）
-        start_30m = max(0, i - thirty_min_window)
-        thirty_min_window_data = data.iloc[start_30m:i][['30_close','ma30_8', 'ma30_24', 'vol_30m_ma']]
-
-        # 对齐数据维度
-        if len(thirty_min_window_data) < thirty_min_window:
-            continue
+        # 30分钟级数据窗口（以30分钟为间隔向前取72个点）
+        thirty_min_indices = range(i - window_size_30m, i, interval)
+        thirty_min_window_data = data.iloc[list(thirty_min_indices)][['30_close','ma30_8', 'ma30_24', 'vol_30m_ma']]
 
         # 特征处理
         minute_features = minute_window[['close', 'volume', 'ma5', 'ma20',
                                          'min_golden_cross', 'min_death_cross',
                                          'intra_minute', 'trading_phase']]
-
-        thirty_min_features = thirty_min_window_data[-thirty_min_window:]  # 取最近的72个30分钟K线
 
         # 标签生成
         current_close = minute_window.iloc[-1]['close']
@@ -123,7 +118,7 @@ def create_multi_scale_dataset(data, lookback, horizon, day_window=3):
         label = 1 if future_close > current_close else 0
 
         x_minute.append(minute_features.values)
-        x_30m.append(thirty_min_features.values)
+        x_30m.append(thirty_min_window_data.values)
         y.append(label)
 
     return np.array(x_minute), np.array(x_30m), np.array(y)

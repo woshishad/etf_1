@@ -15,7 +15,7 @@ def fetch_data():
     data['datetime'] = pd.to_datetime(data['datetime'])
     data.set_index('datetime', inplace=True)
     # 获取最近 一年 的数据
-    data = data[data.index >= pd.Timestamp.now() - pd.Timedelta(days=90)]
+    data = data[data.index >= pd.Timestamp.now() - pd.Timedelta(days=150)]
     # 重采样为30分钟级别数据
     data_30m = data.resample('30min').agg({
         'open': 'first',  # 30分钟内的第一个开盘价
@@ -200,7 +200,7 @@ def to_tensor(x_minute, x_30m, y):
 
 # 修改数据分割后的部分
 x_minute_train, x_minute_test, x_30m_train, x_30m_test, y_train, y_test = train_test_split(
-    x_minute, x_30m, y, test_size=0.2, shuffle=False)
+    x_minute, x_30m, y, test_size=0.1, shuffle=False)
 
 # 转换为Tensor（添加这部分）
 x_minute_train, x_30m_train, y_train = to_tensor(x_minute_train, x_30m_train, y_train)
@@ -232,7 +232,7 @@ def train(model, x_minute, x_30m, y, criterion, optimizer, epochs=100, batch_siz
 
 
 # 训练模型
-train(model, x_minute_train, x_30m_train, y_train, criterion, optimizer, epochs=200)
+train(model, x_minute_train, x_30m_train, y_train, criterion, optimizer, epochs=300)
 
 
 # 评估函数

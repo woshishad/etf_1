@@ -11,7 +11,7 @@ def fetch_data():
     data = pd.read_csv('IM9999_1m.csv', encoding='utf-8')
     data['datetime'] = pd.to_datetime(data['datetime'])
     data.set_index('datetime', inplace=True)
-    data = data[data.index >= pd.Timestamp.now() - pd.Timedelta(days=90)]
+    data = data[data.index >= pd.Timestamp.now() - pd.Timedelta(days=150)]
     data_30m = data.resample('30min').agg({
         'open': 'first',
         'high': 'max',
@@ -82,32 +82,38 @@ def calculate_features(minute_data, data_30m):
     return valid_df
 
 def create_multi_scale_dataset(data, lookback, horizon, day_window=3):
+    """创建多时间尺度数据集"""
     x_minute = []
     x_30m = []
     y = []
-    thirty_min_window = day_window * 24 * 3  # 3天数据
-    
-    for i in range(len(data) - lookback - horizon):
+
+    interval = 30  # 每30分钟一个点
+    steps_30m = day_window * 24  # 3天 = 72个30分钟点
+    window_size_30m = interval * steps_30m  # 实际需要2160分钟长度
+
+    for i in range(window_size_30m, len(data) - lookback - horizon):
+        # 分钟级数据窗口
         minute_window = data.iloc[i:i + lookback]
-        start_30m = max(0, i - thirty_min_window)
-        thirty_min_window_data = data.iloc[start_30m:i][['close', 'ma30_8', 'ma30_24', 'vol_30m_ma']]
-        
-        if len(thirty_min_window_data) < thirty_min_window:
-            continue
-        
-        minute_features = minute_window[['close', 'volume', 'ma5', 'ma20', 
-                                         'min_golden_cross', 'min_death_cross']].values
-        thirty_min_features = thirty_min_window_data.values
-        
+
+        # 30分钟级数据窗口（以30分钟为间隔向前取72个点）
+        thirty_min_indices = range(i - window_size_30m, i, interval)
+        thirty_min_window_data = data.iloc[list(thirty_min_indices)][['30_close','ma30_8', 'ma30_24', 'vol_30m_ma']]
+
+        # 特征处理
+        minute_features = minute_window[['close', 'volume', 'ma5', 'ma20',
+                                         'min_golden_cross', 'min_death_cross']]
+
+        # 标签生成
         current_close = minute_window.iloc[-1]['close']
         future_close = data.iloc[i + lookback + horizon - 1]['close']
         label = 1 if future_close > current_close else 0
-        
-        x_minute.append(minute_features)
-        x_30m.append(thirty_min_features)
+
+        x_minute.append(minute_features.values)
+        x_30m.append(thirty_min_window_data.values)
         y.append(label)
 
     return np.array(x_minute), np.array(x_30m), np.array(y)
+
 
 class MultiScaleRNN(nn.Module):
     def __init__(self, minute_input_size, thirty_min_input_size, hidden_size, output_size):
@@ -188,7 +194,7 @@ def train(model, x_minute, x_30m, y, criterion, optimizer, epochs=100, batch_siz
             epoch_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {epoch_loss/len(x_minute):.4f}')
 
-train(model, x_minute_train, x_30m_train, y_train, criterion, optimizer, epochs=200)
+train(model, x_minute_train, x_30m_train, y_train, criterion, optimizer, epochs=300)
 
 
 # 评估函数

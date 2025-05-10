@@ -6,22 +6,30 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_score, recall_score, f1_score
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 def fetch_data():
-    data = pd.read_csv('IM9999_1m.csv', encoding='utf-8')
+    data = pd.read_csv('/Users/yaoge/学习/大四下/论文/etf/etf_1/IM9999_1m.csv', encoding='utf-8')
+    # 假设 stock_minute_data 是你的分钟级数据
+    # 确保数据框有 'datetime', 'open', 'high', 'low', 'close', 'volume' 列
     data['datetime'] = pd.to_datetime(data['datetime'])
     data.set_index('datetime', inplace=True)
+    # 获取最近 一年 的数据
     data = data[data.index >= pd.Timestamp.now() - pd.Timedelta(days=150)]
+    # 重采样为30分钟级别数据
     data_30m = data.resample('30min').agg({
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'volume': 'sum'
+        'open': 'first',  # 30分钟内的第一个开盘价
+        'high': 'max',  # 30分钟内的最高价
+        'low': 'min',  # 30分钟内的最低价
+        'close': 'last',  # 30分钟内的最后一个收盘价
+        'volume': 'sum'  # 30分钟内的成交量总和
     })
+
+    # 选择需要的数据列
     minute_data = data[['open', 'high', 'low', 'close', 'volume']]
-    data_30m = data_30m[['open', 'high', 'low', 'close', 'volume']]
-    return minute_data, data_30m
+    data_30m=data_30m[['open', 'high', 'low', 'close', 'volume']]
+    return minute_data,data_30m
+
 
 def calculate_features(minute_data, data_30m):
     """计算多时间尺度特征（带健壮性检查）"""
@@ -81,6 +89,7 @@ def calculate_features(minute_data, data_30m):
 
     return valid_df
 
+
 def create_multi_scale_dataset(data, lookback, horizon, day_window=3):
     """创建多时间尺度数据集"""
     x_minute = []
@@ -101,7 +110,8 @@ def create_multi_scale_dataset(data, lookback, horizon, day_window=3):
 
         # 特征处理
         minute_features = minute_window[['close', 'volume', 'ma5', 'ma20',
-                                         'min_golden_cross', 'min_death_cross']]
+                                         'min_golden_cross', 'min_death_cross',
+                                         'intra_minute', 'trading_phase']]
 
         # 标签生成
         current_close = minute_window.iloc[-1]['close']
@@ -115,42 +125,58 @@ def create_multi_scale_dataset(data, lookback, horizon, day_window=3):
     return np.array(x_minute), np.array(x_30m), np.array(y)
 
 
-class MultiScaleCNN(nn.Module):
-    def __init__(self, minute_input_size, thirty_min_input_size, output_size):
+
+# 修改模型结构
+class FeatureFusionModel(nn.Module):
+    def __init__(self, minute_input_size, thirty_min_input_size, hidden_size, output_size):
         super().__init__()
-        self.minute_conv = nn.Sequential(
+        # CNN 模块处理分钟级数据
+        self.cnn_minute = nn.Sequential(
             nn.Conv1d(minute_input_size, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveMaxPool1d(1)
+            nn.AdaptiveMaxPool1d(10),
+            nn.Flatten()
         )
-        self.thirty_conv = nn.Sequential(
-            nn.Conv1d(thirty_min_input_size, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveMaxPool1d(1)
-        )
+
+        # RNN 模块处理分钟级数据
+        self.rnn_minute = nn.GRU(minute_input_size, hidden_size, batch_first=True)
+
+        # LSTM 模块处理 30 分钟级数据
+        self.lstm_30m = nn.LSTM(thirty_min_input_size, hidden_size, batch_first=True)
+
+        # 全连接层整合特征
         self.fc = nn.Sequential(
-            nn.Linear(32 * 2, 64),
+            nn.Linear(hidden_size * 2 + 32 * 10, 64),
             nn.ReLU(),
             nn.Linear(64, output_size)
         )
 
     def forward(self, x_minute, x_30m):
-        x_minute = x_minute.permute(0, 2, 1)
-        x_30m = x_30m.permute(0, 2, 1)
-        out_minute = self.minute_conv(x_minute).squeeze(-1)
-        out_30m = self.thirty_conv(x_30m).squeeze(-1)
-        combined = torch.cat([out_minute, out_30m], dim=1)
+        # CNN输入需转为 [B, C, T]
+        x_cnn = self.cnn_minute(x_minute.permute(0, 2, 1))
+
+        # RNN输出取最后时刻 hidden state
+        _, h_rnn = self.rnn_minute(x_minute)
+
+        # LSTM输出
+        _, (h_lstm, _) = self.lstm_30m(x_30m)
+
+        # 拼接所有特征
+        combined = torch.cat([x_cnn, h_rnn[-1], h_lstm[-1]], dim=1)
         return self.fc(combined).squeeze(-1)
 
+
+
 # 参数设置
-lookback = 60
-thirty_min_window = 72
-horizon = 30
-minute_input_size = 6
+lookback = 60  # 60分钟数据
+thirty_min_window = 72  # 3天的30分钟数据（72个K线）
+horizon = 30  # 预测30分钟后
+minute_input_size = 8
 thirty_min_input_size = 4
+hidden_size = 64
 output_size = 1
 
-# 数据准备
+# 数据准备流程
 minute_data, data_30m = fetch_data()
 merged_data = calculate_features(minute_data, data_30m)
 x_minute, x_30m, y = create_multi_scale_dataset(merged_data, lookback, horizon)
@@ -159,11 +185,11 @@ x_minute, x_30m, y = create_multi_scale_dataset(merged_data, lookback, horizon)
 minute_scaler = StandardScaler()
 thirty_min_scaler = StandardScaler()
 
+# 对分钟级数据标准化
 x_minute = minute_scaler.fit_transform(x_minute.reshape(-1, x_minute.shape[-1])).reshape(x_minute.shape)
+# 对30分钟级数据标准化
 x_30m = thirty_min_scaler.fit_transform(x_30m.reshape(-1, x_30m.shape[-1])).reshape(x_30m.shape)
 
-# 数据分割
-x_minute_train, x_minute_test, x_30m_train, x_30m_test, y_train, y_test = train_test_split(x_minute, x_30m, y, test_size=0.2, shuffle=False)
 
 # 转换为Tensor
 def to_tensor(x_minute, x_30m, y):
@@ -171,23 +197,39 @@ def to_tensor(x_minute, x_30m, y):
             torch.tensor(x_30m, dtype=torch.float32),
             torch.tensor(y, dtype=torch.float32))
 
+
+# 修改数据分割后的部分
+x_minute_train = x_minute[:-100]
+x_minute_test = x_minute[-100:]
+
+x_30m_train = x_30m[:-100]
+x_30m_test = x_30m[-100:]
+
+y_train = y[:-100]
+y_test = y[-100:]
+1.
+
+
+# 转换为Tensor（添加这部分）
 x_minute_train, x_30m_train, y_train = to_tensor(x_minute_train, x_30m_train, y_train)
 x_minute_test, x_30m_test, y_test = to_tensor(x_minute_test, x_30m_test, y_test)
 
 # 初始化模型
-model = MultiScaleCNN(minute_input_size, thirty_min_input_size, output_size)
+model = FeatureFusionModel(minute_input_size, thirty_min_input_size, hidden_size, output_size)
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-# 训练函数
+
 def train(model, x_minute, x_30m, y, criterion, optimizer, epochs=100, batch_size=64):
     model.train()
     for epoch in range(epochs):
         epoch_loss = 0
         for i in range(0, len(x_minute), batch_size):
+            # 确保使用正确的切片方式（PyTorch张量）
             x_m_batch = x_minute[i:i+batch_size]
             x_30m_batch = x_30m[i:i+batch_size]
             y_batch = y[i:i+batch_size]
+
             optimizer.zero_grad()
             outputs = model(x_m_batch, x_30m_batch)
             loss = criterion(outputs, y_batch)
@@ -196,7 +238,10 @@ def train(model, x_minute, x_30m, y, criterion, optimizer, epochs=100, batch_siz
             epoch_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {epoch_loss/len(x_minute):.4f}')
 
+
+# 训练模型
 train(model, x_minute_train, x_30m_train, y_train, criterion, optimizer, epochs=300)
+
 
 # 评估函数
 def evaluate(model, x_minute, x_30m, y):
@@ -205,10 +250,26 @@ def evaluate(model, x_minute, x_30m, y):
         outputs = model(x_minute, x_30m)
         preds = (torch.sigmoid(outputs) > 0.5).float()
         acc = (preds == y).float().mean()
-        precision = precision_score(y.numpy(), preds.numpy(), zero_division=0)
-        recall = recall_score(y.numpy(), preds.numpy(), zero_division=0)
-        f1 = f1_score(y.numpy(), preds.numpy(), zero_division=0)
+        precision = precision_score(y.numpy(), preds.numpy())
+        recall = recall_score(y.numpy(), preds.numpy())
+        f1 = f1_score(y.numpy(), preds.numpy())
     print(f'Accuracy: {acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}')
 
+
+# 评估模型
 evaluate(model, x_minute_test, x_30m_test, y_test)
 
+
+# 预测函数
+def predict(model, current_minute, current_30m, minute_scaler, thirty_min_scaler):
+    model.eval()
+    # 标准化
+    scaled_minute = minute_scaler.transform(current_minute.reshape(-1, current_minute.shape[-1])).reshape(
+        current_minute.shape)
+    scaled_30m = thirty_min_scaler.transform(current_30m.reshape(-1, current_30m.shape[-1])).reshape(current_30m.shape)
+
+    with torch.no_grad():
+        output = model(torch.tensor(scaled_minute).unsqueeze(0),
+                       torch.tensor(scaled_30m).unsqueeze(0))
+        prob = torch.sigmoid(output).item()
+    return 1 if prob > 0.5 else 0, prob
