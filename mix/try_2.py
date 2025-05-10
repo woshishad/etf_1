@@ -240,7 +240,7 @@ def train(model, x_minute, x_30m, y, criterion, optimizer, epochs=100, batch_siz
 
 
 # 训练模型
-train(model, x_minute_train, x_30m_train, y_train, criterion, optimizer, epochs=300)
+train(model, x_minute_train, x_30m_train, y_train, criterion, optimizer, epochs=200)
 
 
 # 评估函数
