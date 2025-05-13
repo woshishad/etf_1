@@ -17,7 +17,7 @@ def fetch_minute_data():
     df.set_index('datetime', inplace=True)
 
     # 获取最近 一年 的数据
-    df = df[df.index >= pd.Timestamp.now() - pd.Timedelta(days=80)]
+    df = df[df.index >= pd.Timestamp.now() - pd.Timedelta(days=150)]
 
     ohlc_data = df[['open', 'high', 'low', 'close', 'volume']]
 
@@ -240,7 +240,7 @@ def predict(model, data, lookback=60, horizon=30):
 
 
 # 评估模型
-recent_data = df[df.index >= pd.Timestamp.now() - pd.Timedelta(days=80)]
+recent_data = df[df.index >= pd.Timestamp.now() - pd.Timedelta(days=150)]
 predictions = []
 actual_labels = []
 
